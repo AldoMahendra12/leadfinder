@@ -1,11 +1,9 @@
 import { NextResponse } from "next/server";
 import { initiateWarmupSend } from "../../../../lib/warmupScheduler";
 
-export async function POST() {
+async function handleTrigger() {
   try {
-    console.log("[WarmupTrigger API] Manually triggering a warmup send...");
-    // Override active configuration check to allow manual sends for testing
-    // (We temporarily make it active if it wasn't, send, and restore)
+    console.log("[WarmupTrigger API] Triggering a warmup send...");
     const result = await initiateWarmupSend();
     
     if (result.success) {
@@ -18,3 +16,12 @@ export async function POST() {
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }
+
+export async function POST() {
+  return handleTrigger();
+}
+
+export async function GET() {
+  return handleTrigger();
+}
+
