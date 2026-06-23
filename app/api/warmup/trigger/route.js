@@ -4,7 +4,7 @@ import { initiateWarmupSend } from "../../../../lib/warmupScheduler";
 async function handleTrigger() {
   try {
     console.log("[WarmupTrigger API] Triggering a warmup send...");
-    const result = await initiateWarmupSend();
+    const result = await initiateWarmupSend(true);
     
     if (result.success) {
       return NextResponse.json({ success: true, messageId: result.messageId });
