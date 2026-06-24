@@ -6,9 +6,10 @@ export async function GET() {
   try {
     const config = getWarmupConfig();
     const stats = getWarmupStats();
-    
-    // Auto-start scheduler if configured active but interval is not running
-    if (config.active) {
+
+    // On local dev: auto-start scheduler if active
+    const isVercel = process.env.VERCEL === "1" || process.env.VERCEL_ENV !== undefined;
+    if (!isVercel && config.active) {
       startWarmupScheduler();
     }
 
@@ -34,7 +35,9 @@ export async function GET() {
         daysElapsed,
         daysLeft
       },
-      stats
+      stats,
+      // Tells the UI whether cron (Vercel) or setInterval (local) is running the warmup
+      mode: (process.env.VERCEL === "1" || process.env.VERCEL_ENV !== undefined) ? "vercel-cron" : "local-interval"
     });
   } catch (error) {
     console.error("[WarmupConfig API] GET error:", error);
@@ -46,26 +49,51 @@ export async function POST(req) {
   try {
     const body = await req.json();
     const currentConfig = getWarmupConfig();
+    const isVercel = process.env.VERCEL === "1" || process.env.VERCEL_ENV !== undefined;
 
     const updates = {};
+    let vercelEnvInstructions = null;
+
     if (body.active !== undefined) {
       updates.active = !!body.active;
+
       if (updates.active && !currentConfig.active) {
         // Turning ON
         updates.startDate = new Date().toISOString();
-        startWarmupScheduler();
-        // Fire one email immediately to start the warmup loop
-        setTimeout(async () => {
-          try {
-            console.log("[WarmupConfig API] Firing initial warmup email...");
-            await initiateWarmupSend();
-          } catch (e) {
-            console.error("[WarmupConfig API] Error sending initial email:", e);
-          }
-        }, 1000);
+
+        if (!isVercel) {
+          // Local dev: use setInterval
+          startWarmupScheduler();
+          // Fire one immediately
+          setTimeout(async () => {
+            try {
+              console.log("[WarmupConfig API] Firing initial warmup email...");
+              await initiateWarmupSend();
+            } catch (e) {
+              console.error("[WarmupConfig API] Error sending initial email:", e);
+            }
+          }, 1000);
+        } else {
+          // On Vercel: the cron will call /api/warmup/trigger every 30 min.
+          // We just need WARMUP_ACTIVE=true and WARMUP_START_DATE in env.
+          vercelEnvInstructions = {
+            WARMUP_ACTIVE: "true",
+            WARMUP_START_DATE: updates.startDate,
+            WARMUP_DURATION_DAYS: String(body.durationDays || currentConfig.durationDays || 14)
+          };
+        }
+
       } else if (!updates.active && currentConfig.active) {
         // Turning OFF
-        stopWarmupScheduler();
+        if (!isVercel) {
+          stopWarmupScheduler();
+        }
+        // On Vercel: user must set WARMUP_ACTIVE=false in Vercel env vars
+        if (isVercel) {
+          vercelEnvInstructions = {
+            WARMUP_ACTIVE: "false"
+          };
+        }
       }
     }
 
@@ -78,15 +106,22 @@ export async function POST(req) {
     const currentLimit = calculateDailyLimit(updatedConfig.startDate);
     const sentToday = getSentTodayCount();
 
-    return NextResponse.json({
+    const response = {
       success: true,
       config: {
         ...updatedConfig,
         currentLimit,
         sentToday
       },
-      stats
-    });
+      stats,
+      mode: isVercel ? "vercel-cron" : "local-interval"
+    };
+
+    if (vercelEnvInstructions) {
+      response.vercelEnvInstructions = vercelEnvInstructions;
+    }
+
+    return NextResponse.json(response);
   } catch (error) {
     console.error("[WarmupConfig API] POST error:", error);
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });

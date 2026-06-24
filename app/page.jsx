@@ -180,6 +180,8 @@ export default function Home() {
   const [warmupStats, setWarmupStats] = useState(null);
   const [warmupLoading, setWarmupLoading] = useState(false);
   const [warmupTriggering, setWarmupTriggering] = useState(false);
+  const [warmupMode, setWarmupMode] = useState(null); // "vercel-cron" | "local-interval"
+  const [warmupEnvInstructions, setWarmupEnvInstructions] = useState(null);
 
   // Fetch CRM leads on mount or when switching to CRM/Campaigns tabs
   useEffect(() => {
@@ -234,6 +236,7 @@ export default function Home() {
       if (data.success) {
         setWarmupConfig(data.config);
         setWarmupStats(data.stats);
+        setWarmupMode(data.mode || null);
       }
     } catch (err) {
       console.error("Failed to fetch warmup config:", err);
@@ -244,6 +247,7 @@ export default function Home() {
 
   const handleToggleWarmup = async () => {
     setWarmupLoading(true);
+    setWarmupEnvInstructions(null);
     try {
       const res = await fetch("/api/warmup/config", {
         method: "POST",
@@ -254,6 +258,11 @@ export default function Home() {
       if (data.success) {
         setWarmupConfig(data.config);
         setWarmupStats(data.stats);
+        setWarmupMode(data.mode || null);
+        // On Vercel, show env var instructions so the warmup persists after cold starts
+        if (data.vercelEnvInstructions) {
+          setWarmupEnvInstructions(data.vercelEnvInstructions);
+        }
       } else {
         alert("Failed to update warmup settings: " + data.error);
       }
@@ -267,13 +276,19 @@ export default function Home() {
   const handleTriggerWarmupEmail = async () => {
     setWarmupTriggering(true);
     try {
-      const res = await fetch("/api/warmup/trigger", { method: "POST" });
+      const res = await fetch("/api/warmup/trigger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: true })
+      });
       const data = await res.json();
       if (data.success) {
-        alert("Simulated warmup email initiated successfully!");
+        alert("✅ Warmup email sent successfully!");
         fetchWarmupConfig();
+      } else if (data.skipped) {
+        alert("ℹ️ Skipped: " + data.reason);
       } else {
-        alert("Failed to send warmup email: " + (data.error || "Unknown error"));
+        alert("❌ Failed to send warmup email: " + (data.error || "Unknown error"));
       }
     } catch (err) {
       alert("Error: " + err.message);
@@ -1546,9 +1561,19 @@ export default function Home() {
                     <h2 className="text-lg font-black tracking-tight text-slate-100">
                       Domain Warmup Playground
                     </h2>
+                    {/* Show whether running via Vercel Cron or local interval */}
+                    {warmupMode === "vercel-cron" ? (
+                      <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-violet-500/20 text-violet-400 border border-violet-500/30">
+                        ☁️ VERCEL CRON
+                      </span>
+                    ) : warmupMode === "local-interval" ? (
+                      <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                        💻 LOCAL DEV
+                      </span>
+                    ) : null}
                   </div>
                   <p className="text-xs text-slate-400 mt-1 font-semibold text-slate-300">
-                    Simulate automated round-trip sends, opens, and replies using Brevo&apos;s inbound webhook. No real mailbox required!
+                    Automated round-trip warmup: sends, opens &amp; replies via Brevo. Runs 24/7 on Vercel even when your laptop is off.
                   </p>
                 </div>
                 
@@ -1590,6 +1615,38 @@ export default function Home() {
                   </button>
                 </div>
               </div>
+
+              {/* Vercel env var instructions shown when warmup is toggled ON on Vercel */}
+              {warmupEnvInstructions && (
+                <div className="bg-violet-950/50 border border-violet-500/30 rounded-xl p-4 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-violet-400 text-sm">☁️</span>
+                    <h3 className="text-sm font-bold text-violet-300">One-time Vercel Setup Required</h3>
+                  </div>
+                  <p className="text-xs text-violet-300/80">
+                    To keep warmup running 24/7 (even after server restarts), add these 3 environment variables in your
+                    {" "}<a href="https://vercel.com/dashboard" target="_blank" rel="noopener noreferrer" className="underline text-violet-400">Vercel Dashboard → Settings → Environment Variables</a>:
+                  </p>
+                  <div className="space-y-1.5">
+                    {Object.entries(warmupEnvInstructions).map(([key, value]) => (
+                      <div key={key} className="flex items-center gap-2 bg-slate-950 rounded-lg px-3 py-2 border border-slate-800">
+                        <code className="text-amber-400 text-xs font-mono font-bold">{key}</code>
+                        <span className="text-slate-600">=</span>
+                        <code className="text-emerald-400 text-xs font-mono">{value}</code>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-[11px] text-violet-400/70">
+                    ⚡ After adding these, redeploy your app. Vercel Cron will call <code className="font-mono">/api/warmup/trigger</code> every 30 minutes automatically — no laptop needed!
+                  </p>
+                  <button
+                    onClick={() => setWarmupEnvInstructions(null)}
+                    className="text-[11px] text-slate-500 hover:text-slate-400 underline"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
 
               {/* Stats & Current limits */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -1639,9 +1696,12 @@ export default function Home() {
               <div className="bg-slate-950 p-5 rounded-xl border border-slate-800/80 space-y-4">
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                   <div>
-                    <h3 className="text-sm font-bold text-slate-200">Sandbox Playground Commands</h3>
+                    <h3 className="text-sm font-bold text-slate-200">Sandbox Controls</h3>
                     <p className="text-xs text-slate-400 mt-0.5">
-                      Verify that your Brevo DNS settings and webhook configuration are set up correctly.
+                      {warmupMode === "vercel-cron"
+                        ? "Running on Vercel Cron — fires every 30 min automatically. Use \"Send Test\" to trigger manually."
+                        : "Running locally — stops when dev server stops. Deploy to Vercel for 24/7 warmup."
+                      }
                     </p>
                   </div>
                   <button
@@ -1672,12 +1732,14 @@ export default function Home() {
                       <span className="font-mono text-slate-300">10 inbound1.sendinblue.com</span> and <span className="font-mono text-slate-300">20 inbound2.sendinblue.com</span>
                     </li>
                     <li>
-                      In Brevo Dashboard, go to <strong className="text-slate-300 font-bold">Transactional &gt; Settings &gt; Webhooks</strong> and add a webhook:
-                      <br />
-                      <span className="font-mono text-slate-300">URL: https://&lt;your-app-domain&gt;/api/warmup/inbound</span>
+                      In Brevo Dashboard, go to <strong className="text-slate-300 font-bold">Transactional &gt; Settings &gt; Webhooks</strong> and add a webhook:<br />
+                      <span className="font-mono text-slate-300">URL: https://your-app.vercel.app/api/warmup/inbound</span>
                     </li>
                     <li>
                       Enable the <strong className="text-slate-300 font-bold">Inbound Event Webhook</strong> (trigger on incoming emails).
+                    </li>
+                    <li className="text-violet-400">
+                      <strong>For 24/7 warmup on Vercel:</strong> Add <code className="font-mono">WARMUP_ACTIVE=true</code>, <code className="font-mono">WARMUP_START_DATE</code>, and <code className="font-mono">WARMUP_DURATION_DAYS=14</code> in Vercel env vars. The cron job handles the rest!
                     </li>
                   </ul>
                 </div>
