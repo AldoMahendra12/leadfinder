@@ -87,9 +87,12 @@ export async function POST(request) {
       console.log(`[API] Kept all ${filteredLeads.length} leads (Broad Mode).`);
     }
 
-    // Process leads, calculate score, check duplicates
-    const formattedLeads = await Promise.all(
-      filteredLeads.map(async (lead) => {
+    // Process leads, calculate score, check duplicates in throttled batches to prevent network congestion/timeouts
+    const BATCH_SIZE = 3;
+    const formattedLeads = [];
+    for (let i = 0; i < filteredLeads.length; i += BATCH_SIZE) {
+      const batch = filteredLeads.slice(i, i + BATCH_SIZE);
+      const batchPromises = batch.map(async (lead) => {
         const name = lead.title || "Unknown";
         const address = lead.address || "Unknown";
         const hash = computeLeadHash(name, address);
@@ -152,22 +155,23 @@ export async function POST(request) {
           notes: existing?.notes || "",
           socialLink: existing?.socialLink || "N/A"
         };
-      })
-    );
+      });
+
+      const batchResults = await Promise.all(batchPromises);
+      formattedLeads.push(...batchResults);
+    }
 
     let leads = formattedLeads;
 
     // Run AI Enrichment if autoEnrich is toggled
     if (autoEnrich && leads.length > 0) {
-      console.log("[API] Auto-enrichment is enabled. Processing leads...");
-      // To save tokens and avoid long response times, enrich only leads that are not duplicates 
-      // or those that are duplicates but still have N/A for email/ownerName.
-      const toEnrich = leads.filter(l => !l.isDuplicate || l.email === "N/A" || l.ownerName === "N/A");
+      // To save tokens and avoid long response times, enrich only new leads that do not have an email yet.
+      const toEnrich = leads.filter(l => !l.isDuplicate && l.email === "N/A");
       
       if (toEnrich.length > 0) {
         // Limit auto-enrichment to the first 25 leads to avoid long response times
         const limitToEnrich = toEnrich.slice(0, 25);
-        console.log(`[API] Auto-enriching ${limitToEnrich.length} leads (out of ${toEnrich.length} candidate leads)...`);
+        console.log(`[API] Auto-enriching ${limitToEnrich.length} leads (out of ${toEnrich.length} candidate leads with no email)...`);
         
         const enrichedLeads = await enrichLeads(limitToEnrich, location);
         
